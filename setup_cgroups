@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+
+"""
+setup_cgroups
+
+This script reads cgroup configurations from a TOML file (`/etc/setup_cgroupsd.toml`)
+and sets up cgroups with specified resource limits using libcgroup commands. It is compatible
+with both cgroup v1 and v2 by detecting the cgroup version and applying appropriate configurations.
+
+Configuration File Format:
+--------------------------
+The configuration file `/etc/setup_cgroupsd.toml` should define cgroup resource limits
+in the following format:
+
+    [cgroup_name]
+    controller.parameter = value
+
+For example:
+
+    ["cron"]
+    "memory.max_usage_in_bytes" = 500000
+    "memory.kmem.max_usage_in_bytes" = 1000000
+    "cpu.shares" = 512
+
+    ["cron/special_task"]
+    "memory.max_usage_in_bytes" = 600000
+    "blkio.weight" = 100
+
+Each section represents a cgroup (e.g., `cron` or `cron/special_task`). Each key within a section
+is a `controller.parameter` pair (e.g., `memory.max_usage_in_bytes`), where `controller` specifies
+the cgroup subsystem (such as `memory`, `cpu`, `blkio`) and `parameter` specifies the configuration
+setting within that subsystem.
+
+Usage:
+------
+1. Define your desired cgroups and resource limits in `/etc/setup_cgroupsd.toml`.
+2. Run this script with root privileges to apply the configurations:
+
+    sudo ./setup_cgroups
+
+The script will:
+- Create each specified cgroup if it doesn’t already exist.
+- Set resource limits according to the parameters defined in the configuration file.
+
+Note:
+-----
+Ensure that libcgroup tools (e.g., `cgcreate`, `cgset`) are installed and accessible
+on your system, and that the script has sufficient permissions to manage cgroups.
+"""
+
+import os
+import subprocess
+import sys
+import tomllib
+
+
+CONFIG_FILE = '/etc/setup_cgroups.toml'
+
+
+def parse_cgroup_settings(settings):
+	"""Parse the settings to determine which controllers are required and organize settings by controller."""
+	controllers = {}
+	for key, value in settings.items():
+		controller, param = key.split('.', 1)
+		if controller not in controllers:
+			controllers[controller] = {}
+		controllers[controller][param] = value
+	return controllers
+
+
+def setup_cgroup(cgroup, controllers):
+	"""Create and configure a cgroup with the specified controllers and settings."""
+	# Create cgroup with all necessary controllers
+	controller_list = ','.join(controllers.keys())
+	subprocess.check_output(['cgcreate', '-g', f'{controller_list}:/{cgroup}'])
+
+	# Apply settings for each controller
+	for controller, params in controllers.items():
+		for param, value in params.items():
+			subprocess.check_output(['cgset', '-r', f'{controller}.{param}={value}', f'/{cgroup}'])
+
+
+def main():
+	if not os.path.exists(CONFIG_FILE):
+		sys.stderr.write(f"Configuration file not found: {CONFIG_FILE}\n")
+		exit(1)
+
+	# Load the configuration from the TOML file
+	with open(CONFIG_FILE, 'rb') as f:
+		config = tomllib.load(f)
+
+	# Iterate over the config and set up each cgroup
+	for cgroup, settings in config.items():
+		# Parse the settings to group by controller
+		controllers = parse_cgroup_settings(settings)
+
+		# Remove the leading slash if necessary
+		cgroup = cgroup.lstrip('/')
+		try:
+			setup_cgroup(cgroup, controllers)
+		except subprocess.CalledProcessError as e:
+			sys.stderr.write(f"Error setting up cgroup {cgroup}: {e}\n")
+
+
+if __name__ == '__main__':
+	main()
